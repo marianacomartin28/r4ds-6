@@ -12,3 +12,99 @@ library(DBI)
 library(duckdb)
 library(dbplyr)
 ```
+
+```{r}
+con <- dbConnect(duckdb(), dbdir = "data/atus.duckdb")
+dbplyr_act <- tbl(con, "activities")
+dbplyr_resp <- tbl(con, "respondents")
+dbplyr_codes <- tbl(con, "activity_codes")
+```
+
+```{r}
+#| cache: true
+activity_avg <- dbplyr_resp |>
+  filter(
+    day_type == "Weekday",
+    employment_status == "Not in labor force"
+  ) |>
+  inner_join(dbplyr_act, by = "tucaseid") |>
+  inner_join(dbplyr_codes, by = "activity_code") |>
+  group_by(tucaseid, sex, major_name) |>
+  summarize(total_minutes = sum(duration_min, na.rm = TRUE), .groups = "drop") |>
+  group_by(sex, major_name) |>
+  summarize(mean_minutes = mean(total_minutes, na.rm = TRUE), .groups = "drop") |>
+  collect()
+```
+
+```{r}
+hourly_avg <- dbplyr_resp |>
+  filter(
+    day_type == "Weekday",
+    employment_status == "Not in labor force"
+  ) |>
+  inner_join(dbplyr_act, by = "tucaseid") |>
+  inner_join(dbplyr_codes, by = "activity_code") |>
+  mutate(hour = start_hhmm %/% 100) |>
+  filter(
+    hour >= 6,
+    hour <= 23,
+    major_name %in% c(
+      "Personal Care Activities",
+      "Household Activities",
+      "Eating and Drinking",
+      "Socializing, Relaxing, and Leisure"
+    )
+  ) |>
+  group_by(tucaseid, sex, hour, major_name) |>
+  summarize(total_minutes = sum(duration_min, na.rm = TRUE), .groups = "drop") |>
+  group_by(sex, hour, major_name) |>
+  summarize(mean_minutes = mean(total_minutes, na.rm = TRUE), .groups = "drop") |>
+  collect()
+
+hourly_avg
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+activity_avg |>
+  filter(major_name != "Data Codes") |>
+  mutate(major_name = reorder(major_name, mean_minutes, FUN = mean)) |>
+  ggplot(aes(x = major_name, y = mean_minutes, fill = sex)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  coord_flip() +
+  labs(
+    title = "Average Daily Minutes by Activity Category",
+    subtitle = "Weekday respondents not in the labor force",
+    x = "Activity category",
+    y = "Average minutes per day",
+    fill = "Sex",
+    caption = "Source: American Time Use Survey"
+  )
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 6
+hourly_avg |>
+  mutate(
+    clock_hour = if_else(
+      hour == 12,
+      "12 PM",
+      if_else(hour > 12, paste(hour - 12, "PM"), paste(hour, "AM"))
+    ),
+    clock_hour = factor(clock_hour, levels = unique(clock_hour[order(hour)]))
+  ) |>
+  ggplot(aes(x = clock_hour, y = mean_minutes, fill = major_name, group = major_name)) +
+  geom_area(position = "stack") +
+  facet_wrap(~sex) +
+  labs(
+    title = "How the Day Fills Up",
+    subtitle = "Average weekday minutes by activity start hour for non-employed respondents",
+    x = "Hour of day",
+    y = "Average minutes",
+    fill = "Activity category",
+    caption = "Source: American Time Use Survey"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
